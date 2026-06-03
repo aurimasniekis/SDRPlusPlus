@@ -60,13 +60,14 @@ class ATVDecoderModule : public ModuleManager::Instance {
     }
 
     ~ATVDecoderModule() {
-        if (vfo) {
-            sigpath::vfoManager.deleteVFO(vfo);
-        }
+        // Stop the DSP chain before deleting the VFO it reads from
         agc.stop();
         demod.stop();
         sync.stop();
         sink.stop();
+        if (vfo) {
+            sigpath::vfoManager.deleteVFO(vfo);
+        }
         gui::menu.removeEntry(name);
     }
 
