@@ -18,6 +18,11 @@ set(ESPHOME_API_BUILD_CLI           OFF CACHE BOOL "" FORCE)
 # Noise PSK support must stay ON (Options.noise_psk); libsodium is vendored.
 set(ESPHOME_API_WITH_NOISE          ON  CACHE BOOL "" FORCE)
 
+# Don't pull in zlib: protobuf only needs it for gzip streams (unused here), and
+# a from-source protobuf build links it as @rpath/libz.1.dylib, which the macOS
+# bundler skips (system lib) — leaving the plugin unable to load at runtime.
+set(protobuf_WITH_ZLIB              OFF CACHE BOOL "" FORCE)
+
 # Static deps (protobuf/abseil/sodium) get linked into our SHARED module → need PIC (Linux).
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
