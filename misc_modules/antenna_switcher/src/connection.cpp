@@ -270,7 +270,7 @@ private:
         using clock = std::chrono::steady_clock;
         auto lastState = clock::now();
         auto lastBearing = clock::now();
-        const int tickMs = std::max(10, std::min(stateUpdateMs_, bearingUpdateMs_));
+        const int tickMs = (std::max)(10, (std::min)(stateUpdateMs_, bearingUpdateMs_));
 
         std::unique_lock<std::mutex> lk(mtx_);
         while (running_) {
