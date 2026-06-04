@@ -377,12 +377,12 @@ private:
             // The chip row below is ~10% of the compass size; reserve it (plus one
             // item spacing) so the whole thing fits without a scrollbar.
             const float maxByHeight = (heightBudget - ImGui::GetStyle().ItemSpacing.y) / 1.10f;
-            size = std::min(size, maxByHeight);
+            size = (std::min)(size, maxByHeight);
         }
         if (size < 60.0f) { size = 60.0f; }
-        const float nodeR = std::max(8.0f, size * 0.047f);
+        const float nodeR = (std::max)(8.0f, size * 0.047f);
         const float margin = size * 0.0625f;
-        const float lineW = std::max(1.0f, size * 0.0047f);
+        const float lineW = (std::max)(1.0f, size * 0.0047f);
 
         const ImVec2 cursor = ImGui::GetCursorPos();
         const ImVec2 origin = ImGui::GetCursorScreenPos();
@@ -442,12 +442,12 @@ private:
         ImGui::Dummy(ImVec2(avail, size));
 
         // Inputs 9 and 10 as centered pill chips below the compass, scaled to match.
-        const float fScale = std::max(0.85f, size / 320.0f);
+        const float fScale = (std::max)(0.85f, size / 320.0f);
         ImGui::SetWindowFontScale(fScale);
         const float chipW = size * 0.15f;
         const float chipH = size * 0.10f;
         const float total = chipW * 2.0f + ImGui::GetStyle().ItemSpacing.x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (avail - total) * 0.5f));
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (std::max)(0.0f, (avail - total) * 0.5f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, chipH * 0.5f);
         for (int input = 9; input <= 10; input++) {
             const ImVec4 cv = inputStateColor(input, st, ui);
