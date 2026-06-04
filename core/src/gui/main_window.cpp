@@ -447,14 +447,21 @@ void MainWindow::draw() {
             newWidth = mousePos.x;
             newWidth = std::clamp<float>(newWidth, 250, winSize.x - 250);
             ImGui::GetForegroundDrawList()->AddLine(ImVec2(newWidth, curY), ImVec2(newWidth, winSize.y - 10), ImGui::GetColorU32(ImGuiCol_SeparatorActive));
+            // Lock the waterfall while resizing so dragging over it doesn't trigger
+            // VFO hover coloring / interactions (the waterfall is drawn afterwards).
+            lockWaterfallControls = true;
         }
-        if (mousePos.x >= newWidth - (2.0f * style::uiScale) && mousePos.x <= newWidth + (2.0f * style::uiScale) && mousePos.y > curY) {
+        // Only grab the splitter when the main window is the top-most hovered
+        // window, so dragging a floating window over the splitter doesn't resize
+        // the menu (z-order aware).
+        bool mainHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+        if (mainHovered && mousePos.x >= newWidth - (2.0f * style::uiScale) && mousePos.x <= newWidth + (2.0f * style::uiScale) && mousePos.y > curY) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
             if (click) {
                 grabbingMenu = true;
             }
         }
-        else {
+        else if (mainHovered) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_Arrow);
         }
         if (!down && grabbingMenu) {

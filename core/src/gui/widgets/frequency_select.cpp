@@ -130,7 +130,9 @@ void FrequencySelect::draw() {
         }
     }
 
-    if (!gui::mainWindow.lockWaterfallControls) {
+    // Require the window to actually be hovered (z-order aware) so a floating
+    // window over the frequency display doesn't leak hover/clicks/wheel through.
+    if (!gui::mainWindow.lockWaterfallControls && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
         ImVec2 mousePos = ImGui::GetMousePos();
         bool leftClick = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
         bool rightClick = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
@@ -224,6 +226,9 @@ void FrequencySelect::draw() {
                 }
             }
         }
+    }
+    else {
+        digitHovered = false;
     }
 
     uint64_t freq = 0;
