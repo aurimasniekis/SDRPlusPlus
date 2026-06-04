@@ -23,6 +23,11 @@ set(ESPHOME_API_WITH_NOISE          ON  CACHE BOOL "" FORCE)
 # bundler skips (system lib) — leaving the plugin unable to load at runtime.
 set(protobuf_WITH_ZLIB              OFF CACHE BOOL "" FORCE)
 
+# Match SDR++'s dynamic CRT (/MD) on MSVC. protobuf defaults to the static
+# runtime (/MT); mixing it into our /MD module gives two CRT heaps and crashes
+# the plugin on load (silently, right after init).
+set(protobuf_MSVC_STATIC_RUNTIME    OFF CACHE BOOL "" FORCE)
+
 # Static deps (protobuf/abseil/sodium) get linked into our SHARED module → need PIC (Linux).
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
