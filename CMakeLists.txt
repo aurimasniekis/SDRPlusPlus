@@ -102,6 +102,14 @@ else()
 endif()
 set(SDRPP_MODULE_COMPILER_FLAGS ${SDRPP_COMPILER_FLAGS})
 
+# VS 2022 17.10 changed std::mutex to a constexpr constructor, breaking ABI:
+# binaries built with the new STL crash on first mutex lock when paired with an
+# older msvcp140.dll. Opt back into the old ABI so we stay compatible with the
+# runtime we ship / that's present on user machines.
+if (MSVC)
+    add_compile_definitions(_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
+endif ()
+
 # Set a default install prefix
 if (CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
     if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
