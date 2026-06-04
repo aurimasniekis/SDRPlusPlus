@@ -88,6 +88,8 @@ cp $build_dir/decoder_modules/radio/Release/radio.dll sdrpp_windows_x64/modules/
 
 
 # Copy misc modules
+cp $build_dir/misc_modules/antenna_switcher/Release/antenna_switcher.dll sdrpp_windows_x64/modules/
+
 cp $build_dir/misc_modules/discord_integration/Release/discord_integration.dll sdrpp_windows_x64/modules/
 
 cp $build_dir/misc_modules/frequency_manager/Release/frequency_manager.dll sdrpp_windows_x64/modules/
