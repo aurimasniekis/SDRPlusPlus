@@ -50,5 +50,7 @@ add_test(NAME reed_solomon_shim_interop_test WORKING_DIRECTORY "${CMAKE_BINARY_D
 set(all_test_runners ${all_test_runners} reed_solomon_shim_interop_test_runner)
 
 add_custom_target(test_runners DEPENDS ${all_test_runners})
-add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND} DEPENDS test_runners)
+# Renamed from the generic "check" to avoid a target-name collision with abseil
+# (pulled in via FetchContent by the antenna_switcher module's dependency tree).
+add_custom_target(correct_check COMMAND ${CMAKE_CTEST_COMMAND} DEPENDS test_runners)
 enable_testing()
