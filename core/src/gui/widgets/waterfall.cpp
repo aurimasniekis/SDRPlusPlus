@@ -217,7 +217,7 @@ namespace ImGui {
         
         ImVec2 mPos = ImGui::GetMousePos();
 
-        if (IS_IN_AREA(mPos, wfMin, wfMax) && !gui::mainWindow.lockWaterfallControls && !inputHandled) {
+        if (IS_IN_AREA(mPos, wfMin, wfMax) && !gui::mainWindow.lockWaterfallControls && !inputHandled && ImGui::IsWindowHovered()) {
             for (auto const& [name, vfo] : vfos) {
                 window->DrawList->AddRectFilled(vfo->wfRectMin, vfo->wfRectMax, vfo->color);
                 if (!vfo->lineVisible) { continue; }
@@ -260,10 +260,14 @@ namespace ImGui {
         bool mouseClicked = ImGui::ButtonBehavior(ImRect(fftAreaMin, wfMax), GetID("WaterfallID"), &mouseHovered, &mouseHeld,
                                                   ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_PressedOnClick);
 
-        mouseInFFTResize = (dragOrigin.x > widgetPos.x && dragOrigin.x < widgetPos.x + widgetSize.x && dragOrigin.y >= widgetPos.y + newFFTAreaHeight - (2.0f * style::uiScale) && dragOrigin.y <= widgetPos.y + newFFTAreaHeight + (2.0f * style::uiScale));
-        mouseInFreq = IS_IN_AREA(dragOrigin, freqAreaMin, freqAreaMax);
-        mouseInFFT = IS_IN_AREA(dragOrigin, fftAreaMin, fftAreaMax);
-        mouseInWaterfall = IS_IN_AREA(dragOrigin, wfMin, wfMax);
+        // Only react to the mouse when the waterfall is the top-most hovered
+        // widget. `mouseHovered` (from the ButtonBehavior above) is z-order
+        // aware, so a floating window covering the spectrum no longer leaks
+        // clicks/drags/wheel through to the waterfall behind it.
+        mouseInFFTResize = mouseHovered && (dragOrigin.x > widgetPos.x && dragOrigin.x < widgetPos.x + widgetSize.x && dragOrigin.y >= widgetPos.y + newFFTAreaHeight - (2.0f * style::uiScale) && dragOrigin.y <= widgetPos.y + newFFTAreaHeight + (2.0f * style::uiScale));
+        mouseInFreq = mouseHovered && IS_IN_AREA(dragOrigin, freqAreaMin, freqAreaMax);
+        mouseInFFT = mouseHovered && IS_IN_AREA(dragOrigin, fftAreaMin, fftAreaMax);
+        mouseInWaterfall = mouseHovered && IS_IN_AREA(dragOrigin, wfMin, wfMax);
 
         int mouseWheel = ImGui::GetIO().MouseWheel;
 
@@ -272,10 +276,12 @@ namespace ImGui {
         lastMousePos = mousePos;
 
         std::string hoveredVFOName = "";
-        for (auto const& [name, _vfo] : vfos) {
-            if (ImGui::IsMouseHoveringRect(_vfo->rectMin, _vfo->rectMax) || ImGui::IsMouseHoveringRect(_vfo->wfRectMin, _vfo->wfRectMax)) {
-                hoveredVFOName = name;
-                break;
+        if (mouseHovered) {
+            for (auto const& [name, _vfo] : vfos) {
+                if (ImGui::IsMouseHoveringRect(_vfo->rectMin, _vfo->rectMax) || ImGui::IsMouseHoveringRect(_vfo->wfRectMin, _vfo->wfRectMax)) {
+                    hoveredVFOName = name;
+                    break;
+                }
             }
         }
 
@@ -474,7 +480,7 @@ namespace ImGui {
                 }
             }
         }
-        else if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        else if (mouseHovered && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             // Check if a VFO is hovered. If yes, show tooltip
             for (auto const& [name, _vfo] : vfos) {
                 if (ImGui::IsMouseHoveringRect(_vfo->rectMin, _vfo->rectMax) || ImGui::IsMouseHoveringRect(_vfo->wfRectMin, _vfo->wfRectMax)) {
@@ -1363,7 +1369,7 @@ namespace ImGui {
             window->DrawList->AddRectFilled(notchMin, notchMax, IM_COL32(255, 0, 0, 127));
         }
 
-        if (!gui::mainWindow.lockWaterfallControls && !gui::waterfall.inputHandled) {
+        if (!gui::mainWindow.lockWaterfallControls && !gui::waterfall.inputHandled && ImGui::IsWindowHovered()) {
             ImVec2 mousePos = ImGui::GetMousePos();
             if (rectMax.x - rectMin.x < 10) { return; }
             if (reference != REF_LOWER && !bandwidthLocked && !leftClamped) {

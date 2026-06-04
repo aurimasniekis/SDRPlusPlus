@@ -83,7 +83,10 @@ bool Menu::draw(bool updateStates) {
         headerTops[displayedCount - 1] = posMin.y;
         optionIDs[displayedCount - 1] = rawId - 1;
 
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsMouseHoveringRect(posMin, posMax)) {
+        // IsMouseHoveringRect ignores windows stacked on top, so require the menu
+        // window itself to be hovered — otherwise dragging a floating window over
+        // a menu header would start a module reorder.
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsMouseHoveringRect(posMin, posMax) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
             menuClicked = true;
             clickedMenuName = opt.name;
         }
