@@ -8,6 +8,15 @@ apt install -y build-essential cmake git libfftw3-dev libglfw3-dev libvolk2-dev 
             libiio-dev libad9361-dev librtaudio-dev libhackrf-dev librtlsdr-dev libbladerf-dev liblimesuite-dev p7zip-full wget portaudio19-dev \
             libcodec2-dev autoconf libtool xxd libspdlog-dev
 
+# Install a recent CMake (>= 3.25, required by the antenna_switcher module's
+# dependencies; Debian 11 ships 3.18). Kitware has no Debian apt repo, so use
+# the official binary release and put it first on PATH.
+CMAKE_VER=3.30.5
+CMAKE_ARCH=$(uname -m)
+wget -q https://github.com/Kitware/CMake/releases/download/v${CMAKE_VER}/cmake-${CMAKE_VER}-linux-${CMAKE_ARCH}.tar.gz
+tar xzf cmake-${CMAKE_VER}-linux-${CMAKE_ARCH}.tar.gz
+export PATH="/root/cmake-${CMAKE_VER}-linux-${CMAKE_ARCH}/bin:$PATH"
+
 # Install SDRPlay libraries
 SDRPLAY_ARCH=$(dpkg --print-architecture)
 wget https://www.sdrplay.com/software/SDRplay_RSP_API-Linux-3.15.2.run
