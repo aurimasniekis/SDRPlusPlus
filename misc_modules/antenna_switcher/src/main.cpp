@@ -324,23 +324,29 @@ private:
         else { ui.autoOrder.push_back(input); }
     }
 
-    static bool planContains(const ChannelUi& ui, int input) {
-        for (const antenna_switcher::PlanStep& s : ui.planSteps) {
-            if (s.kind == antenna_switcher::PlanStep::Kind::Input && s.input == input) {
-                return true;
-            }
-        }
-        return false;
+    static bool activeCycleContains(const antenna_switcher::ChannelState& st, int input) {
+        return std::find(st.activeInputs.begin(), st.activeInputs.end(), input) !=
+               st.activeInputs.end();
     }
 
-    // Color a node/button by its input's role: active (blue), in plan (orange),
-    // in auto cycle (green), or idle (grey).
-    static ImVec4 inputStateColor(int input, const antenna_switcher::ChannelState& st,
-                                  const ChannelUi& ui) {
-        if (st.activeInput == input) { return ImVec4(0.20f, 0.47f, 0.90f, 1.0f); }  // blue
-        if (planContains(ui, input)) { return ImVec4(0.95f, 0.59f, 0.12f, 1.0f); }  // orange
-        if (autoContains(ui, input)) { return ImVec4(0.18f, 0.62f, 0.28f, 1.0f); }  // green
-        return ImVec4(0.25f, 0.25f, 0.30f, 1.0f);  // grey
+    // Fill color for an input chip, driven purely by device state: the selected
+    // input is solid blue, members of the auto cycle are a translucent blue, and
+    // everything else is idle grey.
+    static ImVec4 inputStateColor(int input, const antenna_switcher::ChannelState& st) {
+        if (st.activeInput == input) { return ImVec4(0.16f, 0.51f, 0.94f, 1.0f); }      // solid blue
+        if (activeCycleContains(st, input)) { return ImVec4(0.16f, 0.51f, 0.94f, 0.28f); } // translucent
+        return ImVec4(0.22f, 0.22f, 0.26f, 1.0f);                                       // grey
+    }
+
+    // ImDrawList has no dashed-circle primitive; stroke alternating arc segments.
+    static void addDashedCircle(ImDrawList* dl, const ImVec2& c, float r, ImU32 col,
+                                float thickness, int dashes = 16) {
+        constexpr float TWO_PI = 6.28318531f;
+        for (int d = 0; d < dashes; d++) {
+            const float a0 = TWO_PI * (float)d / (float)dashes;
+            dl->PathArcTo(c, r, a0, a0 + TWO_PI * 0.5f / (float)dashes, 6);  // half on, half off
+            dl->PathStroke(col, false, thickness);
+        }
     }
 
     // Handle a click on an input node: plain = SET, shift = toggle auto,
@@ -399,28 +405,30 @@ private:
         // Ring
         dl->AddCircle(ImVec2(cx, cy), ringR, ringCol, 64, lineW);
 
-        // Cardinal labels (N at top, clockwise).
+        // Cardinal labels rotate with the bearing: input 1 (and the needle) stay
+        // fixed at the top, so the label for direction (i*45)° sits at screen angle
+        // (i*45 - bearing)° clockwise from the top. When input 1 points north the
+        // "N" is at the top; when it points south the "S" is.
         static const char* CARD[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
         for (int i = 0; i < 8; i++) {
-            const float a = (float)i * 45.0f * PI / 180.0f;
+            const float a = ((float)i * 45.0f - (float)st.bearing) * PI / 180.0f;
             drawCenteredText(dl, CARD[i],
                              ImVec2(cx + labelR * sinf(a), cy - labelR * cosf(a)), dim, size * 0.05f);
         }
 
-        // Bearing needle (red), pointing `bearing` degrees clockwise from north.
-        const float bRad = (float)st.bearing * PI / 180.0f;
-        dl->AddLine(ImVec2(cx, cy), ImVec2(cx + ringR * sinf(bRad), cy - ringR * cosf(bRad)),
-                    IM_COL32(230, 40, 40, 255), lineW * 1.4f);
+        // Bearing needle (red): always points straight up to input 1.
+        dl->AddLine(ImVec2(cx, cy), ImVec2(cx, cy - ringR), IM_COL32(230, 40, 40, 255), lineW * 1.4f);
 
         // Center bearing readout.
         char btxt[16];
         snprintf(btxt, sizeof(btxt), "%d\xC2\xB0", st.bearing);
         drawCenteredText(dl, btxt, ImVec2(cx, cy + size * 0.056f), white, size * 0.06f);
 
-        // Input nodes 1-8 around the ring (offset by the channel's angleOffset).
+        // Input nodes 1-8 around the ring, fixed: input 1 at the top, 2..8 clockwise.
+        const ImU32 blue = IM_COL32(40, 130, 240, 255);
         for (int i = 0; i < 8; i++) {
             const int input = i + 1;
-            const float a = ((float)st.angleOffset + (float)i * 45.0f) * PI / 180.0f;
+            const float a = (float)i * 45.0f * PI / 180.0f;
             const ImVec2 p(cx + ringR * sinf(a), cy - ringR * cosf(a));
             char id[48];
             snprintf(id, sizeof(id), "##antsw_node%d_ch%d", input, ci);
@@ -428,13 +436,26 @@ private:
             ImGui::InvisibleButton(id, ImVec2(nodeR * 2.0f, nodeR * 2.0f));
             const bool hovered = ImGui::IsItemHovered();
             if (ImGui::IsItemClicked()) { handleInputClick(channel, ui, ci, input); }
-            ImVec4 cv = inputStateColor(input, st, ui);
-            if (hovered) { cv = ImVec4(cv.x + 0.12f, cv.y + 0.12f, cv.z + 0.12f, 1.0f); }
-            dl->AddCircleFilled(p, nodeR, ImGui::GetColorU32(cv));
-            dl->AddCircle(p, nodeR, IM_COL32(255, 255, 255, 45));
             char num[8];
             snprintf(num, sizeof(num), "%d", input);
-            drawCenteredText(dl, num, p, white, nodeR * 1.2f);
+            if (st.activeInput == input) {
+                // Currently selected input: solid blue.
+                dl->AddCircleFilled(p, nodeR, hovered ? IM_COL32(70, 155, 255, 255) : blue);
+                dl->AddCircle(p, nodeR, IM_COL32(255, 255, 255, 60), 0, lineW);
+                drawCenteredText(dl, num, p, white, nodeR * 1.2f);
+            }
+            else if (activeCycleContains(st, input)) {
+                // Auto-cycle member: translucent blue fill + dashed blue border.
+                dl->AddCircleFilled(p, nodeR, IM_COL32(40, 130, 240, hovered ? 80 : 45));
+                addDashedCircle(dl, p, nodeR, IM_COL32(70, 150, 250, 255), lineW * 1.3f);
+                drawCenteredText(dl, num, p, white, nodeR * 1.2f);
+            }
+            else {
+                // Idle.
+                dl->AddCircleFilled(p, nodeR, IM_COL32(45, 45, 52, hovered ? 200 : 120));
+                dl->AddCircle(p, nodeR, IM_COL32(120, 120, 130, 90), 0, lineW);
+                drawCenteredText(dl, num, p, dim, nodeR * 1.2f);
+            }
         }
 
         // Reserve the compass area in the layout.
@@ -450,7 +471,7 @@ private:
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (std::max)(0.0f, (avail - total) * 0.5f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, chipH * 0.5f);
         for (int input = 9; input <= 10; input++) {
-            const ImVec4 cv = inputStateColor(input, st, ui);
+            const ImVec4 cv = inputStateColor(input, st);
             char lbl[32];
             snprintf(lbl, sizeof(lbl), "%d##antsw_node%d_ch%d", input, input, ci);
             if (coloredButton(lbl, cv, ImVec2(chipW, chipH))) { handleInputClick(channel, ui, ci, input); }
