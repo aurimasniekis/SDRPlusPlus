@@ -29,16 +29,6 @@ on:
                 options:
                     - amd64
                     - aarch64
-            msvc_toolset:
-                description: "Pin MSVC toolset (windows only, blank = runner default). 14.29 is preinstalled; 14.39/14.40 are installed on demand."
-                required: false
-                default: ""
-                type: choice
-                options:
-                    - ""
-                    - "14.29"
-                    - "14.39"
-                    - "14.40"
 
 env:
     BUILD_TYPE: Release
@@ -114,77 +104,16 @@ jobs:
         - name: Install libhydrasdr
           run: git clone https://github.com/hydrasdr/rfone_host; cd rfone_host/ ; mkdir build ; cd build ; cmake .. -DCMAKE_BUILD_TYPE=Release "-DLIBUSB_LIBRARIES=C:\Program Files\PothosSDR\lib\libusb-1.0.lib" "-DLIBUSB_INCLUDE_DIR=C:\Program Files\PothosSDR\include\libusb-1.0" "-DTHREADS_PTHREADS_WIN32_LIBRARY=C:\Program Files\PothosSDR\lib\pthreadVC2.lib" "-DTHREADS_PTHREADS_INCLUDE_DIR=C:\Program Files\PothosSDR\include" ; cmake --build . --config Release ; cmake --install .
 
-        # Optionally pin an older MSVC toolset (e.g. to A/B test the Win11 startup
-        # crash). With the Visual Studio generator the toolset is selected via
-        # CMake's -T version=… (the vcvarsall -vcvars_ver equivalent), so we install
-        # the requested toolset and pass it to configure below.
-        - name: Install MSVC toolset
-          if: ${{ inputs.msvc_toolset != '' }}
-          run: |
-            $want = "${{ inputs.msvc_toolset }}"
-            $inst = "C:\Program Files (x86)\Microsoft Visual Studio\Installer"
-            $vs = & "$inst\vswhere.exe" -latest -property installationPath
-            Write-Host "Toolsets present before install:"; Get-ChildItem "$vs\VC\Tools\MSVC" -Name
-            # Install on demand only if the requested toolset isn't already present
-            # (14.29 ships on the runner, so this is a no-op for it).
-            if (-not (Get-ChildItem "$vs\VC\Tools\MSVC" -Name | Where-Object { $_ -like "$want.*" })) {
-                $map = @{
-                    "14.29" = "Microsoft.VisualStudio.Component.VC.14.29.16.11.x86.x64"
-                    "14.39" = "Microsoft.VisualStudio.Component.VC.14.39.17.9.x86.x64"
-                    "14.40" = "Microsoft.VisualStudio.Component.VC.14.40.17.10.x86.x64"
-                }
-                $id = $map[$want]
-                if (-not $id) { Write-Error "No component mapping for toolset $want"; exit 1 }
-                # NOTE: pass each arg bare — Start-Process -ArgumentList already quotes
-                # elements with spaces. Wrapping $vs in literal quotes yields a malformed
-                # path and vs_installer fails with exit 87 (invalid parameter).
-                # --wait blocks until the modify finishes; -PassThru exposes the real
-                # exit code (3010 = success, reboot requested).
-                $p = Start-Process -Wait -PassThru -FilePath "$inst\vs_installer.exe" `
-                     -ArgumentList "modify","--installPath",$vs,"--add",$id,"--quiet","--norestart","--nocache","--wait"
-                Write-Host "vs_installer exit code: $($p.ExitCode)"
-                if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { Write-Error "vs_installer failed ($($p.ExitCode))"; exit 1 }
-            }
-            # Resolve the exact installed toolset dir (e.g. 14.39.33523).
-            $ver = Get-ChildItem "$vs\VC\Tools\MSVC" -Name | Where-Object { $_ -like "$want.*" } | Sort-Object | Select-Object -Last 1
-            if (-not $ver) { Write-Error "Toolset $want not found after install"; Get-ChildItem "$vs\VC\Tools\MSVC" -Name; exit 1 }
-            # -T version=<ver> only works within the generator's default (v143) family
-            # — 14.3x/14.4x. Older families must be named by toolset (14.29 -> v142).
-            if    ($want -like "14.2*") { $spec = "v142" }
-            elseif ($want -like "14.1*") { $spec = "v141" }
-            else                         { $spec = "version=$ver" }
-            Write-Host "Resolved toolset: $ver (spec: $spec)"
-            "VCTOOLSET_SPEC=$spec" | Out-File -FilePath $Env:GITHUB_ENV -Append
-
+        # Pin the v142 (14.29) toolset: the default v143 (14.4x) STL miscompiles the
+        # global std::mutex and crashes on Win11 at startup. v142 is binary compatible
+        # and ships on the runner, so no extra install is needed.
         - name: Prepare CMake
           working-directory: ${{runner.workspace}}/build
-          run: |
-            $cmakeArgs = @()
-            if ($Env:VCTOOLSET_SPEC) { $cmakeArgs += @("-T", "$Env:VCTOOLSET_SPEC") }
-            $cmakeArgs += @(
-              "-DCOPY_MSVC_REDISTRIBUTABLES=ON",
-              "$Env:GITHUB_WORKSPACE",
-              "-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake",
-              "-DOPT_BUILD_BLADERF_SOURCE=ON", "-DOPT_BUILD_LIMESDR_SOURCE=ON", "-DOPT_BUILD_PERSEUS_SOURCE=ON",
-              "-DOPT_BUILD_SDRPLAY_SOURCE=ON", "-DOPT_BUILD_NEW_PORTAUDIO_SINK=ON", "-DOPT_BUILD_M17_DECODER=ON",
-              "-DOPT_BUILD_RFNM_SOURCE=ON", "-DOPT_BUILD_FOBOSSDR_SOURCE=ON", "-DOPT_BUILD_HYDRASDR_SOURCE=ON",
-              "-DOPT_BUILD_ANTENNA_SWITCHER=ON", "-DOPT_BUILD_ATV_DECODER=ON",
-              "-DCMAKE_CXX_FLAGS=/Zi",
-              "-DCMAKE_SHARED_LINKER_FLAGS=/DEBUG /OPT:REF /OPT:ICF",
-              "-DCMAKE_EXE_LINKER_FLAGS=/DEBUG /OPT:REF /OPT:ICF"
-            )
-            cmake @cmakeArgs
+          run: cmake -T v142 -DCOPY_MSVC_REDISTRIBUTABLES=ON "$Env:GITHUB_WORKSPACE" "-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" -DOPT_BUILD_BLADERF_SOURCE=ON -DOPT_BUILD_LIMESDR_SOURCE=ON -DOPT_BUILD_PERSEUS_SOURCE=ON -DOPT_BUILD_SDRPLAY_SOURCE=ON -DOPT_BUILD_NEW_PORTAUDIO_SINK=ON -DOPT_BUILD_M17_DECODER=ON -DOPT_BUILD_RFNM_SOURCE=ON -DOPT_BUILD_FOBOSSDR_SOURCE=ON -DOPT_BUILD_HYDRASDR_SOURCE=ON -DOPT_BUILD_ANTENNA_SWITCHER=ON -DOPT_BUILD_ATV_DECODER=ON
 
         - name: Build
           working-directory: ${{runner.workspace}}/build
           run: cmake --build . --config Release --verbose
-
-        # Debug symbols (/Zi + /DEBUG) are emitted next to each target; stage them
-        # into build/Release so make_windows_package.ps1 ships them in the zip next
-        # to the matching DLLs (windbg then resolves sdrpp_core.pdb automatically).
-        - name: Stage PDBs into the package
-          working-directory: ${{runner.workspace}}/build
-          run: Get-ChildItem -Path core,source_modules,sink_modules,decoder_modules,misc_modules -Recurse -Filter *.pdb | Copy-Item -Destination Release -Force
 
         - name: Create Archive
           working-directory: ${{runner.workspace}}
