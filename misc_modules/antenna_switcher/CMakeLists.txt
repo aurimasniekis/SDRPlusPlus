@@ -22,8 +22,8 @@ set(ESPHOME_API_BUILD_CLI           OFF CACHE BOOL "" FORCE)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 FetchContent_Declare(antenna-switcher-client
-    URL      https://github.com/aurimasniekis/cpp-antenna-switcher-client/archive/refs/tags/v0.4.1.tar.gz
-    URL_HASH SHA256=34007588bbe028dcab45bc70d4b13ebcfba62c937af3e53a3a50b0202ae10e91
+    URL      https://github.com/aurimasniekis/cpp-antenna-switcher-client/archive/refs/tags/v0.5.0.tar.gz
+    URL_HASH SHA256=6fc51e2b23f6e38bbb971e4bcf3b90f2c4aef22c107db67f73a88969be99da5e
 )
 FetchContent_MakeAvailable(antenna-switcher-client)
 
