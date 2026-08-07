@@ -405,13 +405,15 @@ private:
         // Ring
         dl->AddCircle(ImVec2(cx, cy), ringR, ringCol, 64, lineW);
 
-        // Cardinal labels rotate with the bearing: input 1 (and the needle) stay
-        // fixed at the top, so the label for direction (i*45)° sits at screen angle
-        // (i*45 - bearing)° clockwise from the top. When input 1 points north the
-        // "N" is at the top; when it points south the "S" is.
+        // Cardinal labels rotate with the bearing and the device's angle offset:
+        // input 1 (and the needle) stay fixed at the top, so the label for
+        // direction (i*45)° sits at screen angle (i*45 - bearing + angleOffset)°
+        // clockwise from the top. angleOffset is the bearing input 1 physically
+        // faces, so "N" is at the top when bearing == angleOffset.
         static const char* CARD[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
         for (int i = 0; i < 8; i++) {
-            const float a = ((float)i * 45.0f - (float)st.bearing) * PI / 180.0f;
+            const float a = ((float)i * 45.0f - (float)st.bearing + (float)st.angleOffset)
+                            * PI / 180.0f;
             drawCenteredText(dl, CARD[i],
                              ImVec2(cx + labelR * sinf(a), cy - labelR * cosf(a)), dim, size * 0.05f);
         }
