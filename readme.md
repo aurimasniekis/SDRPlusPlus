@@ -39,6 +39,8 @@ To create a desktop shortcut, rightclick the exe and select `Send to -> Desktop 
 
 ### Debian-based (Ubuntu, Mint, etc)
 
+**Warning: DO NOT** use the `sdrpp` package from the package manager. The package is incompete and incompatible with all official and out-of-tree modules.
+
 Download the latest release from [the Releases page](https://github.com/AlexandreRouma/SDRPlusPlus/releases) and extract to the directory of your choice.
 
 Then, use apt to install it:
