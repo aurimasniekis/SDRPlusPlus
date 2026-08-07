@@ -12,11 +12,15 @@
 
 namespace antsw {
 
+using antenna_switcher::Capabilities;
 using antenna_switcher::Channel;
 using antenna_switcher::ChannelState;
+using antenna_switcher::Feature;
+using antenna_switcher::InputState;
 using antenna_switcher::Options;
 using antenna_switcher::PlanStep;
 using antenna_switcher::TimeUnit;
+using antenna_switcher::UnsupportedRequest;
 
 namespace {
 int channelNum(const Channel c) { return static_cast<int>(c); }
@@ -44,32 +48,30 @@ public:
 
     bool isConnected() const override { return client_.isConnected(); }
 
-    void setInput(const Channel channel, const int input) override {
-        flog::debug("[{0}] setInput ch={1} input={2}", tag_, channelNum(channel), input);
-        client_.setInput(channel, input);
+    std::string setInput(const Channel channel, const int input) override {
+        return sent(channel, client_.setInput(channel, input));
     }
 
-    void startAuto(const Channel channel, const int interval, const TimeUnit unit,
-                   const std::vector<int>& inputs) override {
-        flog::debug("[{0}] startAuto ch={1} interval={2}", tag_, channelNum(channel), interval);
-        client_.startAuto(channel, interval, unit, inputs);
+    std::string startAuto(const Channel channel, const int interval, const TimeUnit unit,
+                          const std::vector<int>& inputs) override {
+        return sent(channel, client_.startAuto(channel, interval, unit, inputs));
     }
 
-    void runPlan(const Channel channel, const std::vector<PlanStep>& steps,
-                 const bool repeat) override {
-        flog::debug("[{0}] runPlan ch={1} steps={2}", tag_, channelNum(channel),
-                    (int)steps.size());
-        client_.runPlan(channel, steps, repeat);
+    std::string runPlan(const Channel channel, const std::vector<PlanStep>& steps,
+                        const bool repeat) override {
+        return sent(channel, client_.runPlan(channel, steps, repeat));
     }
 
-    void stop(const Channel channel) override {
-        flog::debug("[{0}] stop ch={1}", tag_, channelNum(channel));
-        client_.stop(channel);
+    std::string stop(const Channel channel) override {
+        return sent(channel, client_.stop(channel));
     }
 
-    void setAngleOffset(const Channel channel, const int degrees) override {
-        flog::debug("[{0}] setAngleOffset ch={1} deg={2}", tag_, channelNum(channel), degrees);
-        client_.setAngleOffset(channel, degrees);
+    std::string off(const Channel channel) override {
+        return sent(channel, client_.off(channel));
+    }
+
+    std::string setAngleOffset(const Channel channel, const int degrees) override {
+        return sent(channel, client_.setAngleOffset(channel, degrees));
     }
 
     ChannelState state(const Channel channel) const override { return client_.state(channel); }
@@ -77,6 +79,14 @@ public:
     void onStateChanged(StateCallback cb) override { client_.onStateChanged(std::move(cb)); }
 
 private:
+    // Log the command string the client reports having sent, then hand it back
+    // to the caller. Every action goes through here so the log shows the exact
+    // wire grammar rather than a paraphrase of the arguments.
+    std::string sent(const Channel channel, std::string cmd) const {
+        flog::debug("[{0}] ch{1} -> {2}", tag_, channelNum(channel), cmd);
+        return cmd;
+    }
+
     antenna_switcher::AntennaSwitcher client_;
     std::string tag_;
 };
@@ -84,13 +94,22 @@ private:
 // --- Mock device: no server, in-memory state + background simulation --------
 class MockConnection final : public IConnection {
 public:
-    MockConnection(const Options& opts, std::string tag, int stateUpdateMs, int bearingUpdateMs)
+    MockConnection(const Options& opts, std::string tag, int stateUpdateMs, int bearingUpdateMs,
+                   const Capabilities& caps)
         : tag_(std::move(tag)),
           stateUpdateMs_(stateUpdateMs > 0 ? stateUpdateMs : 1000),
           bearingUpdateMs_(bearingUpdateMs > 0 ? bearingUpdateMs : 100) {
+        // Both simulated switchers answer with the configured shape, as a board
+        // that responded to `id` would.
+        for (ChannelState& s : states_) {
+            s.capabilities = caps;
+            s.capabilities.reported = true;
+        }
         flog::debug("[{0}] mock client created (host={1} port={2} stateUpdate={3}ms "
-                    "bearingUpdate={4}ms)",
-                    tag_, opts.host, (int)opts.port, stateUpdateMs_, bearingUpdateMs_);
+                    "bearingUpdate={4}ms inputs={5} circle={6} features={7})",
+                    tag_, opts.host, (int)opts.port, stateUpdateMs_, bearingUpdateMs_,
+                    caps.inputCount, caps.circleCount,
+                    antenna_switcher::detail::format_feature_flags(caps.features));
     }
 
     ~MockConnection() override { stopWorker(); }
@@ -117,23 +136,32 @@ public:
         return connected_;
     }
 
-    void setInput(const Channel channel, const int input) override {
-        flog::info("[{0}] (mock) setInput ch={1} input={2}", tag_, channelNum(channel), input);
+    std::string setInput(const Channel channel, const int input) override {
+        const Capabilities caps = capsOf(channel);
+        requireInput(channel, caps, input);
+        const std::string cmd = antenna_switcher::detail::build_set_input(input);
+        flog::info("[{0}] (mock) ch{1} -> {2}", tag_, channelNum(channel), cmd);
         ChannelState snap;
         {
             std::lock_guard<std::mutex> lk(mtx_);
             ChannelState& s = states_[channelIdx(channel)];
             s.activeInput = input;
+            s.inputState = InputState::Selected;
             s.mode = antenna_switcher::Mode::Manual;
             snap = s;
         }
         emit(channel, snap);
+        return cmd;
     }
 
-    void startAuto(const Channel channel, const int interval, const TimeUnit unit,
-                   const std::vector<int>& inputs) override {
-        flog::info("[{0}] (mock) startAuto ch={1} interval={2}", tag_, channelNum(channel),
-                   interval);
+    std::string startAuto(const Channel channel, const int interval, const TimeUnit unit,
+                          const std::vector<int>& inputs) override {
+        const Capabilities caps = capsOf(channel);
+        requireFeature(channel, caps, Feature::Auto, "auto");
+        for (const int in : inputs) { requireInput(channel, caps, in); }
+        const std::string cmd =
+            antenna_switcher::detail::build_start_auto(interval, unit, inputs, caps.inputCount);
+        flog::info("[{0}] (mock) ch{1} -> {2}", tag_, channelNum(channel), cmd);
         ChannelState snap;
         {
             std::lock_guard<std::mutex> lk(mtx_);
@@ -144,15 +172,22 @@ public:
             s.activeInputs = inputs;
             cycleIndex_[i] = 0;
             s.activeInput = inputs.empty() ? 1 : inputs.front();
+            s.inputState = InputState::Selected;
             snap = s;
         }
         emit(channel, snap);
+        return cmd;
     }
 
-    void runPlan(const Channel channel, const std::vector<PlanStep>& steps,
-                 const bool repeat) override {
-        flog::info("[{0}] (mock) runPlan ch={1} steps={2} repeat={3}", tag_, channelNum(channel),
-                   (int)steps.size(), repeat);
+    std::string runPlan(const Channel channel, const std::vector<PlanStep>& steps,
+                        const bool repeat) override {
+        const Capabilities caps = capsOf(channel);
+        requireFeature(channel, caps, Feature::Plan, "plan");
+        for (const PlanStep& step : steps) {
+            if (step.kind == PlanStep::Kind::Input) { requireInput(channel, caps, step.input); }
+        }
+        const std::string cmd = antenna_switcher::detail::build_run_plan(steps, repeat);
+        flog::info("[{0}] (mock) ch{1} -> {2}", tag_, channelNum(channel), cmd);
         ChannelState snap;
         {
             std::lock_guard<std::mutex> lk(mtx_);
@@ -164,10 +199,12 @@ public:
             snap = states_[i];
         }
         emit(channel, snap);
+        return cmd;
     }
 
-    void stop(const Channel channel) override {
-        flog::info("[{0}] (mock) stop ch={1}", tag_, channelNum(channel));
+    std::string stop(const Channel channel) override {
+        const std::string cmd = antenna_switcher::detail::build_stop();
+        flog::info("[{0}] (mock) ch{1} -> {2}", tag_, channelNum(channel), cmd);
         ChannelState snap;
         {
             std::lock_guard<std::mutex> lk(mtx_);
@@ -175,11 +212,31 @@ public:
             snap = states_[channelIdx(channel)];
         }
         emit(channel, snap);
+        return cmd;
     }
 
-    void setAngleOffset(const Channel channel, const int degrees) override {
-        flog::info("[{0}] (mock) setAngleOffset ch={1} deg={2}", tag_, channelNum(channel),
-                   degrees);
+    std::string off(const Channel channel) override {
+        requireFeature(channel, capsOf(channel), Feature::Off, "off");
+        const std::string cmd = antenna_switcher::detail::build_off();
+        flog::info("[{0}] (mock) ch{1} -> {2}", tag_, channelNum(channel), cmd);
+        ChannelState snap;
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            ChannelState& s = states_[channelIdx(channel)];
+            // Every RF port isolated: no input live, nothing cycling.
+            s.mode = antenna_switcher::Mode::Manual;
+            s.activeInput = 0;
+            s.inputState = InputState::Isolated;
+            s.activeInputs.clear();
+            snap = s;
+        }
+        emit(channel, snap);
+        return cmd;
+    }
+
+    std::string setAngleOffset(const Channel channel, const int degrees) override {
+        const std::string cmd = "angle_offset=" + std::to_string(degrees);
+        flog::info("[{0}] (mock) ch{1} -> {2}", tag_, channelNum(channel), cmd);
         ChannelState snap;
         {
             std::lock_guard<std::mutex> lk(mtx_);
@@ -187,6 +244,7 @@ public:
             snap = states_[channelIdx(channel)];
         }
         emit(channel, snap);
+        return cmd;
     }
 
     ChannelState state(const Channel channel) const override {
@@ -200,6 +258,34 @@ public:
     }
 
 private:
+    Capabilities capsOf(const Channel channel) const {
+        std::lock_guard<std::mutex> lk(mtx_);
+        return states_[channelIdx(channel)].capabilities;
+    }
+
+    // Mirror the client's local validation so the mock rejects the same
+    // requests, on the same thread, with the same exception type.
+    static void requireFeature(const Channel channel, const Capabilities& caps, const Feature f,
+                               const char* verb) {
+        if (!caps.has(f)) {
+            throw UnsupportedRequest("antenna-switcher: channel " +
+                                     std::to_string(channelNum(channel)) + " does not support '" +
+                                     verb + "' (features " +
+                                     antenna_switcher::detail::format_feature_flags(caps.features) +
+                                     ")");
+        }
+    }
+
+    static void requireInput(const Channel channel, const Capabilities& caps, const int input) {
+        if (input < 1 || input > caps.inputCount) {
+            throw UnsupportedRequest("antenna-switcher: channel " +
+                                     std::to_string(channelNum(channel)) +
+                                     ": input out of range (1.." +
+                                     std::to_string(caps.inputCount) + "): " +
+                                     std::to_string(input));
+        }
+    }
+
     // Fire the state callback (if any) outside the lock to avoid re-entrancy.
     void emit(const Channel channel, const ChannelState& s) {
         StateCallback cb;
@@ -238,10 +324,13 @@ private:
         if (s.mode == antenna_switcher::Mode::Auto) {
             std::vector<int> cyc = s.activeInputs;
             if (cyc.empty()) {
-                for (int k = 1; k <= 10; k++) { cyc.push_back(k); }
+                // An empty selection cycles every input the board advertises.
+                for (int k = 1; k <= s.capabilities.inputCount; k++) { cyc.push_back(k); }
             }
+            if (cyc.empty()) { return false; }
             cycleIndex_[i] = (cycleIndex_[i] + 1) % (int)cyc.size();
             s.activeInput = cyc[cycleIndex_[i]];
+            s.inputState = InputState::Selected;
             return true;
         }
         if (s.mode == antenna_switcher::Mode::Plan) {
@@ -260,7 +349,10 @@ private:
             }
             const PlanStep& step = planSteps_[i][planIndex_[i]];
             planIndex_[i]++;
-            if (step.kind == PlanStep::Kind::Input) { s.activeInput = step.input; }
+            if (step.kind == PlanStep::Kind::Input) {
+                s.activeInput = step.input;
+                s.inputState = InputState::Selected;
+            }
             return true;
         }
         return false;
@@ -283,6 +375,8 @@ private:
             if (elapsedMs(lastBearing, now) >= bearingUpdateMs_) {
                 lastBearing = now;
                 for (int i = 0; i < 2; i++) {
+                    // Only a board with a compass reports a bearing at all.
+                    if (!states_[i].capabilities.has(Feature::Magnetometer)) { continue; }
                     states_[i].bearing = (states_[i].bearing + 1) % 360;
                     changed[i] = true;
                 }
@@ -330,11 +424,12 @@ private:
 
 std::unique_ptr<IConnection> makeConnection(const Options& opts, const bool mock, std::string tag,
                                             const int mockStateUpdateMs,
-                                            const int mockBearingUpdateMs) {
+                                            const int mockBearingUpdateMs,
+                                            const Capabilities mockCaps) {
     if (mock) {
         flog::warn("[{0}] using MOCK connection (no real device)", tag);
         return std::make_unique<MockConnection>(opts, std::move(tag), mockStateUpdateMs,
-                                                mockBearingUpdateMs);
+                                                mockBearingUpdateMs, mockCaps);
     }
     return std::make_unique<RealConnection>(opts, std::move(tag));
 }

@@ -21,9 +21,11 @@ set(ESPHOME_API_BUILD_CLI           OFF CACHE BOOL "" FORCE)
 # The static client (+ esphome) gets linked into our SHARED module → needs PIC (Linux).
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# v0.6.0 is the first release carrying the capability discovery this module
+# relies on: Capabilities / Feature, off() and InputState.
 FetchContent_Declare(antenna-switcher-client
-    URL      https://github.com/aurimasniekis/cpp-antenna-switcher-client/archive/refs/tags/v0.5.0.tar.gz
-    URL_HASH SHA256=6fc51e2b23f6e38bbb971e4bcf3b90f2c4aef22c107db67f73a88969be99da5e
+    URL      https://github.com/aurimasniekis/cpp-antenna-switcher-client/archive/refs/tags/v0.6.0.tar.gz
+    URL_HASH SHA256=52db5ac1c7c88148c4df5c0c0e4bcf5661cd6b47ead9068a811b08a421ac2570
 )
 FetchContent_MakeAvailable(antenna-switcher-client)
 

@@ -91,6 +91,25 @@ public:
         if (cfg.contains("mock_bearing_update")) {
             mockBearingUpdate = cfg["mock_bearing_update"];
         }
+        // Mock-only board shape, so a simulated switcher can stand in for any of
+        // the real ones. Edited under Settings when the mock is enabled.
+        if (cfg.contains("mock_input_count")) {
+            mockCaps.inputCount = (std::max)(1, (int)cfg["mock_input_count"]);
+        }
+        if (cfg.contains("mock_circle_count")) {
+            mockCaps.circleCount =
+                (std::min)(mockCaps.inputCount, (std::max)(0, (int)cfg["mock_circle_count"]));
+        }
+        if (cfg.contains("mock_features")) {
+            const std::string hex = cfg["mock_features"];
+            if (const auto f = antenna_switcher::detail::parse_feature_flags(hex)) {
+                mockCaps.features = *f;
+            }
+            else {
+                flog::warn("[antenna_switcher:{0}] ignoring malformed mock_features '{1}'", name,
+                           hex);
+            }
+        }
         loadChannelConfig(cfg);
         config.release();
 
@@ -349,16 +368,52 @@ private:
         }
     }
 
+    // Combo listing inputs 1..count. Built at runtime because the input count is
+    // whatever the board advertises, not a fixed ten.
+    static bool inputCombo(const char* id, int* sel, int count) {
+        if (count < 1) { count = 1; }
+        if (*sel < 0) { *sel = 0; }
+        if (*sel >= count) { *sel = count - 1; }
+        char preview[16];
+        snprintf(preview, sizeof(preview), "%d", *sel + 1);
+        bool changed = false;
+        if (ImGui::BeginCombo(id, preview)) {
+            for (int i = 0; i < count; i++) {
+                char lbl[16];
+                snprintf(lbl, sizeof(lbl), "%d", i + 1);
+                const bool isSel = (*sel == i);
+                if (ImGui::Selectable(lbl, isSel)) {
+                    *sel = i;
+                    changed = true;
+                }
+                if (isSel) { ImGui::SetItemDefaultFocus(); }
+            }
+            ImGui::EndCombo();
+        }
+        return changed;
+    }
+
+    // Inputs the board puts on the compass ring, clamped to what it actually has.
+    static int ringCountOf(const antenna_switcher::Capabilities& caps) {
+        const int inputs = (std::max)(1, caps.inputCount);
+        return (std::max)(0, (std::min)(caps.circleCount, inputs));
+    }
+
     // Handle a click on an input node: plain = SET, shift = toggle auto,
-    // cmd/super or alt = append to plan.
-    void handleInputClick(antenna_switcher::Channel channel, ChannelUi& ui, int ci, int input) {
+    // cmd/super or alt = append to plan. The modifier shortcuts are inert on a
+    // board that does not advertise the matching feature.
+    void handleInputClick(antenna_switcher::Channel channel, ChannelUi& ui, int ci, int input,
+                          const antenna_switcher::Capabilities& caps) {
+        using antenna_switcher::Feature;
         const ImGuiIO& io = ImGui::GetIO();
         if (io.KeyShift) {
+            if (!caps.has(Feature::Auto)) { return; }
             autoToggle(ui, input);
             flog::debug("[antenna_switcher:{0}] ch{1} compass: toggle auto input {2}", name,
                         ci + 1, input);
         }
         else if (io.KeySuper || io.KeyAlt) {
+            if (!caps.has(Feature::Plan)) { return; }
             ui.planSteps.push_back(antenna_switcher::PlanStep::input_step(input));
             flog::debug("[antenna_switcher:{0}] ch{1} compass: add plan input {2}", name, ci + 1,
                         input);
@@ -369,21 +424,44 @@ private:
         }
     }
 
-    // Compass widget: 8 inputs around a ring, a bearing needle, and inputs 9/10
-    // as buttons below.
+    // Compass widget: the inputs the board puts on its ring, a bearing needle,
+    // and any remaining inputs as chips below.
     void compassSection(antenna_switcher::Channel channel, ChannelUi& ui, int ci,
                         const antenna_switcher::ChannelState& st, float heightBudget = -1.0f) {
+        using antenna_switcher::Feature;
         constexpr float PI = 3.14159265f;
+        const antenna_switcher::Capabilities& caps = st.capabilities;
+        const int inputCount = (std::max)(1, caps.inputCount);
+        const int ringCount = ringCountOf(caps);
+        const int chipCount = inputCount - ringCount;
+        const bool hasMag = caps.has(Feature::Magnetometer);
+
         const float avail = ImGui::GetContentRegionAvail().x;
+        const float spacingX = ImGui::GetStyle().ItemSpacing.x;
+        const float spacingY = ImGui::GetStyle().ItemSpacing.y;
+
+        // Chips scale with the compass, so how many fit per row depends on the
+        // size we are still choosing. Each row is ~10% of the compass size.
+        const auto chipRows = [&](const float s) {
+            if (chipCount <= 0) { return 0; }
+            const float cw = s * 0.15f;
+            int perRow = (int)((avail + spacingX) / (cw + spacingX));
+            perRow = (std::max)(1, (std::min)(perRow, chipCount));
+            return (chipCount + perRow - 1) / perRow;
+        };
+
         // Scale with the available width, optionally clamped to a height budget so
         // the compass + chips fit without a scrollbar. No upper limit, and every
         // dimension is proportional so the ratio is maintained at any size.
         float size = avail;
         if (heightBudget > 0.0f) {
-            // The chip row below is ~10% of the compass size; reserve it (plus one
-            // item spacing) so the whole thing fits without a scrollbar.
-            const float maxByHeight = (heightBudget - ImGui::GetStyle().ItemSpacing.y) / 1.10f;
-            size = (std::min)(size, maxByHeight);
+            // Two passes: the row count depends on the size, and the size on how
+            // many rows have to fit. It settles immediately for a single row.
+            for (int pass = 0; pass < 2; pass++) {
+                const float rows = (float)chipRows(size);
+                const float maxByHeight = (heightBudget - spacingY * rows) / (1.0f + 0.10f * rows);
+                size = (std::min)(avail, maxByHeight);
+            }
         }
         if (size < 60.0f) { size = 60.0f; }
         const float nodeR = (std::max)(8.0f, size * 0.047f);
@@ -418,26 +496,32 @@ private:
                              ImVec2(cx + labelR * sinf(a), cy - labelR * cosf(a)), dim, size * 0.05f);
         }
 
-        // Bearing needle (red): always points straight up to input 1.
-        dl->AddLine(ImVec2(cx, cy), ImVec2(cx, cy - ringR), IM_COL32(230, 40, 40, 255), lineW * 1.4f);
+        // Bearing needle and readout only mean something with a compass fitted;
+        // a board without one reports no bearing, so both are hidden.
+        if (hasMag) {
+            // Bearing needle (red): always points straight up to input 1.
+            dl->AddLine(ImVec2(cx, cy), ImVec2(cx, cy - ringR), IM_COL32(230, 40, 40, 255),
+                        lineW * 1.4f);
 
-        // Center bearing readout.
-        char btxt[16];
-        snprintf(btxt, sizeof(btxt), "%d\xC2\xB0", st.bearing);
-        drawCenteredText(dl, btxt, ImVec2(cx, cy + size * 0.056f), white, size * 0.06f);
+            // Center bearing readout.
+            char btxt[16];
+            snprintf(btxt, sizeof(btxt), "%d\xC2\xB0", st.bearing);
+            drawCenteredText(dl, btxt, ImVec2(cx, cy + size * 0.056f), white, size * 0.06f);
+        }
 
-        // Input nodes 1-8 around the ring, fixed: input 1 at the top, 2..8 clockwise.
+        // Ring nodes, fixed: input 1 at the top, the rest evenly spaced clockwise.
         const ImU32 blue = IM_COL32(40, 130, 240, 255);
-        for (int i = 0; i < 8; i++) {
+        const float step = ringCount > 0 ? 360.0f / (float)ringCount : 0.0f;
+        for (int i = 0; i < ringCount; i++) {
             const int input = i + 1;
-            const float a = (float)i * 45.0f * PI / 180.0f;
+            const float a = (float)i * step * PI / 180.0f;
             const ImVec2 p(cx + ringR * sinf(a), cy - ringR * cosf(a));
             char id[48];
             snprintf(id, sizeof(id), "##antsw_node%d_ch%d", input, ci);
             ImGui::SetCursorScreenPos(ImVec2(p.x - nodeR, p.y - nodeR));
             ImGui::InvisibleButton(id, ImVec2(nodeR * 2.0f, nodeR * 2.0f));
             const bool hovered = ImGui::IsItemHovered();
-            if (ImGui::IsItemClicked()) { handleInputClick(channel, ui, ci, input); }
+            if (ImGui::IsItemClicked()) { handleInputClick(channel, ui, ci, input, caps); }
             char num[8];
             snprintf(num, sizeof(num), "%d", input);
             if (st.activeInput == input) {
@@ -464,20 +548,35 @@ private:
         ImGui::SetCursorPos(cursor);
         ImGui::Dummy(ImVec2(avail, size));
 
-        // Inputs 9 and 10 as centered pill chips below the compass, scaled to match.
+        // Inputs the board keeps off the ring, as centered pill chips below the
+        // compass, scaled to match and wrapped onto as many rows as they need.
+        if (chipCount <= 0) { return; }
         const float fScale = (std::max)(0.85f, size / 320.0f);
         ImGui::SetWindowFontScale(fScale);
         const float chipW = size * 0.15f;
         const float chipH = size * 0.10f;
-        const float total = chipW * 2.0f + ImGui::GetStyle().ItemSpacing.x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (std::max)(0.0f, (avail - total) * 0.5f));
+        int perRow = (int)((avail + spacingX) / (chipW + spacingX));
+        perRow = (std::max)(1, (std::min)(perRow, chipCount));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, chipH * 0.5f);
-        for (int input = 9; input <= 10; input++) {
+        for (int k = 0; k < chipCount; k++) {
+            const int col = k % perRow;
+            if (col == 0) {
+                // Center this row on however many chips it holds.
+                const int rowLen = (std::min)(perRow, chipCount - k);
+                const float total = chipW * (float)rowLen + spacingX * (float)(rowLen - 1);
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+                                     (std::max)(0.0f, (avail - total) * 0.5f));
+            }
+            else {
+                ImGui::SameLine();
+            }
+            const int input = ringCount + 1 + k;
             const ImVec4 cv = inputStateColor(input, st);
             char lbl[32];
             snprintf(lbl, sizeof(lbl), "%d##antsw_node%d_ch%d", input, input, ci);
-            if (coloredButton(lbl, cv, ImVec2(chipW, chipH))) { handleInputClick(channel, ui, ci, input); }
-            if (input == 9) { ImGui::SameLine(); }
+            if (coloredButton(lbl, cv, ImVec2(chipW, chipH))) {
+                handleInputClick(channel, ui, ci, input, caps);
+            }
         }
         ImGui::PopStyleVar();
         ImGui::SetWindowFontScale(1.0f);
@@ -513,12 +612,12 @@ private:
     // Per-channel tab content: Status / Manual / Auto / Plan, mirroring the
     // device web UI.
     void channelTab(antenna_switcher::Channel channel) {
+        using antenna_switcher::Feature;
+        using antenna_switcher::InputState;
         using antenna_switcher::Mode;
         using antenna_switcher::PlanStep;
         using antenna_switcher::TimeUnit;
 
-        static const char* INPUT_ITEMS =
-            "1\0""2\0""3\0""4\0""5\0""6\0""7\0""8\0""9\0""10\0";
         static const char* UNIT_ITEMS = "ms\0us\0";
 
         const int ci = channel == antenna_switcher::Channel::One ? 0 : 1;
@@ -528,12 +627,26 @@ private:
         const float spacing = ImGui::GetStyle().ItemSpacing.x;  // matches SameLine() default
         const float framePad = ImGui::GetStyle().FramePadding.x;
 
-        const ImVec4 colPreset(0.20f, 0.40f, 0.65f, 1.0f);  // blue (1-8)
+        const ImVec4 colPreset(0.20f, 0.40f, 0.65f, 1.0f);  // blue (ring preset)
         const ImVec4 colStart(0.20f, 0.55f, 0.25f, 1.0f);   // green (START / RUN)
         const ImVec4 colReset(0.65f, 0.40f, 0.15f, 1.0f);   // orange (RESET)
         const ImVec4 colStop(0.85f, 0.20f, 0.20f, 1.0f);    // red (STOP)
+        const ImVec4 colOff(0.35f, 0.35f, 0.40f, 1.0f);     // grey (OFF / isolate)
 
         const antenna_switcher::ChannelState st = channelStateSnapshot(channel);
+
+        // The board reports its own shape; nothing below assumes ten inputs, an
+        // eight-way ring or a particular feature set. While disconnected — or
+        // before the device answers — this is the legacy fallback the client and
+        // the device firmware agree on (10 inputs, 8 on the ring, 0x17).
+        const antenna_switcher::Capabilities caps = st.capabilities;
+        const int inputCount = (std::max)(1, caps.inputCount);
+        const int ringCount = ringCountOf(caps);
+        const bool hasAuto = caps.has(Feature::Auto);
+        const bool hasPlan = caps.has(Feature::Plan);
+        const bool hasOff = caps.has(Feature::Off);
+        const bool hasMag = caps.has(Feature::Magnetometer);
+        syncUiToCaps(ui, ci, inputCount);
 
         const float unitW = ImGui::CalcTextSize("ms").x + framePad * 2.0f + ImGui::GetFrameHeight();
 
@@ -561,8 +674,13 @@ private:
                                   : st.mode == Mode::Plan   ? "plan"
                                                             : "unknown";
             statusRow("Mode", modeStr);
-            statusRow("Active Input", st.activeInput > 0 ? std::to_string(st.activeInput) : "-");
-            statusRow("Bearing", std::to_string(st.bearing) + "\xC2\xB0");
+            // activeInput is 0 both when nothing has been reported yet and when
+            // every RF port is isolated; inputState is what tells them apart.
+            std::string inputStr = "-";
+            if (st.inputState == InputState::Isolated) { inputStr = "isolated"; }
+            else if (st.activeInput > 0) { inputStr = std::to_string(st.activeInput); }
+            statusRow("Active Input", inputStr);
+            if (hasMag) { statusRow("Bearing", std::to_string(st.bearing) + "\xC2\xB0"); }
             std::string intervalStr;
             if (st.intervalUs <= 0) { intervalStr = "-"; }
             else if (st.intervalUs % 1000 == 0) { intervalStr = std::to_string(st.intervalUs / 1000) + " ms"; }
@@ -576,11 +694,24 @@ private:
             statusRow("Active Inputs", activeInputs.empty() ? "-" : activeInputs);
         }
 
+        // --- Board --- (what the switcher advertised in answer to `id`)
+        if (beginSection("Board", "board", ci, sfx, ui.boardOpen)) {
+            statusRow("Inputs", std::to_string(caps.inputCount));
+            statusRow("On Compass", std::to_string(caps.circleCount));
+            statusRow("Flags", "0x" + antenna_switcher::detail::format_feature_flags(caps.features));
+            const std::string feats = antenna_switcher::detail::feature_list(caps.features);
+            ImGui::TextDisabled("Features");
+            ImGui::TextWrapped("%s", feats.empty() ? "-" : feats.c_str());
+            if (!caps.reported) {
+                ImGui::TextDisabled("(not reported - assuming the legacy shape)");
+            }
+        }
+
         // --- Manual ---
         if (beginSection("Manual", "manual", ci, sfx, ui.manualOpen)) {
             const float setW = ImGui::CalcTextSize("SET").x + framePad * 2.0f;
             ImGui::SetNextItemWidth(w - setW - spacing);
-            ImGui::Combo(CONCAT("##antsw_manual_", sfx), &ui.manualSel, INPUT_ITEMS);
+            inputCombo(CONCAT("##antsw_manual_", sfx), &ui.manualSel, inputCount);
             ImGui::SameLine();
             if (ImGui::Button(CONCAT("SET##antsw_set_", sfx))) {
                 const int input = ui.manualSel + 1;
@@ -589,8 +720,8 @@ private:
             }
         }
 
-        // --- Auto ---
-        if (beginSection("Auto", "auto", ci, sfx, ui.autoOpen)) {
+        // --- Auto --- (only on a board that implements `auto:`)
+        if (hasAuto && beginSection("Auto", "auto", ci, sfx, ui.autoOpen)) {
             ImGui::SetNextItemWidth(w - unitW - spacing);
             if (ImGui::InputInt(CONCAT("##antsw_autoiv_", sfx), &ui.autoInterval, 0, 0)) {
                 if (ui.autoInterval < 0) { ui.autoInterval = 0; }
@@ -603,15 +734,23 @@ private:
             }
 
             // Checkboxes; clicking adds/removes the input from the cycle. The
-            // checkbox state mirrors membership in the click-ordered list.
-            for (int i = 0; i < 10; i++) {
-                if (i == 8) { ImGui::Separator(); }  // split 1-8 from 9-10, like the web UI
+            // checkbox state mirrors membership in the click-ordered list. Four
+            // per row, with the off-ring inputs split off like the web UI does.
+            int col = 0;
+            for (int i = 0; i < inputCount; i++) {
+                if (i == ringCount && ringCount > 0 && ringCount < inputCount) {
+                    ImGui::Separator();
+                    col = 0;
+                }
+                else if (col != 0) {
+                    ImGui::SameLine();
+                }
                 const int input = i + 1;
                 bool checked = autoContains(ui, input);
                 char cbid[64];
                 snprintf(cbid, sizeof(cbid), "%d##antsw_autocb%d_%s", input, i, sfx.c_str());
                 if (ImGui::Checkbox(cbid, &checked)) { autoToggle(ui, input); }
-                if ((i % 4) != 3 && i != 9) { ImGui::SameLine(); }
+                col = (col + 1) % 4;
             }
             ImGui::Separator();
 
@@ -637,9 +776,15 @@ private:
                 ImGui::Separator();
             }
 
-            if (coloredButton(CONCAT("1-8##antsw_auto18_", sfx), colPreset)) {
+            // Preset: the compass ring, or every input on a board that has no
+            // off-ring extras to distinguish it from.
+            const int presetN = (ringCount > 0 && ringCount < inputCount) ? ringCount : inputCount;
+            char presetLbl[64];
+            snprintf(presetLbl, sizeof(presetLbl), "1-%d##antsw_autopreset_%s", presetN,
+                     sfx.c_str());
+            if (coloredButton(presetLbl, colPreset)) {
                 ui.autoOrder.clear();
-                for (int i = 1; i <= 8; i++) { ui.autoOrder.push_back(i); }
+                for (int i = 1; i <= presetN; i++) { ui.autoOrder.push_back(i); }
             }
             ImGui::SameLine();
             if (coloredButton(CONCAT("START##antsw_autostart_", sfx), colStart)) {
@@ -658,11 +803,11 @@ private:
             }
         }
 
-        // --- Plan ---
-        if (beginSection("Plan", "plan", ci, sfx, ui.planOpen)) {
+        // --- Plan --- (only on a board that implements `plan:`)
+        if (hasPlan && beginSection("Plan", "plan", ci, sfx, ui.planOpen)) {
             const float addInW = ImGui::CalcTextSize("+ INPUT").x + framePad * 2.0f;
             ImGui::SetNextItemWidth(w - addInW - spacing);
-            ImGui::Combo(CONCAT("##antsw_planinput_", sfx), &ui.planInputSel, INPUT_ITEMS);
+            inputCombo(CONCAT("##antsw_planinput_", sfx), &ui.planInputSel, inputCount);
             ImGui::SameLine();
             if (ImGui::Button(CONCAT("+ INPUT##antsw_planaddin_", sfx))) {
                 ui.planSteps.push_back(PlanStep::input_step(ui.planInputSel + 1));
@@ -718,11 +863,20 @@ private:
             }
         }
 
-        // --- Stop ---
+        // --- Stop / Off --- (OFF isolates every RF port; not every board has it,
+        // and it shares the row with STOP when present)
         ImGui::Spacing();
-        if (coloredButton(CONCAT("STOP##antsw_stop_", sfx), colStop, ImVec2(w, 0))) {
+        const float stopW = hasOff ? (w - spacing) * 0.5f : w;
+        if (coloredButton(CONCAT("STOP##antsw_stop_", sfx), colStop, ImVec2(stopW, 0))) {
             flog::info("[antenna_switcher:{0}] ch{1} stop", name, ci + 1);
             withConn([&](antsw::IConnection& c) { c.stop(channel); });
+        }
+        if (hasOff) {
+            ImGui::SameLine();
+            if (coloredButton(CONCAT("OFF##antsw_off_", sfx), colOff, ImVec2(stopW, 0))) {
+                flog::info("[antenna_switcher:{0}] ch{1} off", name, ci + 1);
+                withConn([&](antsw::IConnection& c) { c.off(channel); });
+            }
         }
     }
 
@@ -770,6 +924,11 @@ private:
             saveConfig("mockClient", mockClient);
         }
 
+        // The shape the mock reports. Baked into the connection when it is built,
+        // so it sits inside the busy-disabled block with the other
+        // connection-defining fields and takes effect on the next connect.
+        if (mockClient) { mockBoardSettings(); }
+
         if (busy) { style::endDisabled(); }
 
         ImGui::Separator();
@@ -793,6 +952,61 @@ private:
         if (ImGui::Checkbox(CONCAT("Channel 2 enabled##antsw_ch2_", name), &channel2Enabled)) {
             saveConfig("channel2Enabled", channel2Enabled);
         }
+    }
+
+    // Board shape the mock switcher advertises, so a simulated device can stand
+    // in for any of the real ones. Mock-only, and persisted alongside the rest
+    // of the instance config.
+    void mockBoardSettings() {
+        using antenna_switcher::Feature;
+        namespace det = antenna_switcher::detail;
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Mock board");
+
+        ImGui::LeftLabel("Inputs");
+        ImGui::FillWidth();
+        if (ImGui::InputInt(CONCAT("##antsw_mockinputs_", name), &mockCaps.inputCount, 0, 0)) {
+            if (mockCaps.inputCount < 1) { mockCaps.inputCount = 1; }
+            saveConfig("mock_input_count", mockCaps.inputCount);
+            if (mockCaps.circleCount > mockCaps.inputCount) {
+                mockCaps.circleCount = mockCaps.inputCount;
+                saveConfig("mock_circle_count", mockCaps.circleCount);
+            }
+        }
+
+        ImGui::LeftLabel("On compass");
+        ImGui::FillWidth();
+        if (ImGui::InputInt(CONCAT("##antsw_mockcircle_", name), &mockCaps.circleCount, 0, 0)) {
+            if (mockCaps.circleCount < 0) { mockCaps.circleCount = 0; }
+            if (mockCaps.circleCount > mockCaps.inputCount) {
+                mockCaps.circleCount = mockCaps.inputCount;
+            }
+            saveConfig("mock_circle_count", mockCaps.circleCount);
+        }
+
+        // One checkbox per feature bit the client knows about (asking it for the
+        // features of an all-ones word keeps this list in step with the library),
+        // two to a row. Each toggle flips a single bit, so any reserved bits
+        // already in the word survive untouched.
+        const std::vector<Feature> known = det::decode_features(~0ULL);
+        const float colX = ImGui::GetCursorPosX();
+        const float halfW = ImGui::GetContentRegionAvail().x * 0.5f;
+        for (std::size_t i = 0; i < known.size(); i++) {
+            const auto bit = static_cast<std::uint64_t>(known[i]);
+            bool on = (mockCaps.features & bit) != 0;
+            std::string label = det::feature_name(known[i]);
+            if (!label.empty() && label[0] >= 'a' && label[0] <= 'z') { label[0] -= 'a' - 'A'; }
+            char cbid[96];
+            snprintf(cbid, sizeof(cbid), "%s##antsw_mockfeat%zu_%s", label.c_str(), i,
+                     name.c_str());
+            if (i % 2 == 1) { ImGui::SameLine(colX + halfW); }
+            if (ImGui::Checkbox(cbid, &on)) {
+                mockCaps.features ^= bit;
+                saveConfig("mock_features", det::format_feature_flags(mockCaps.features));
+            }
+        }
+        ImGui::TextDisabled("Flags 0x%s", det::format_feature_flags(mockCaps.features).c_str());
     }
 
     // Handle the connect/disconnect/stop button: toggle the desired state and
@@ -837,7 +1051,7 @@ private:
                 bool ok = false;
                 try {
                     c = antsw::makeConnection(options, mockClient, "antenna_switcher:" + name,
-                                              mockStateUpdate, mockBearingUpdate);
+                                              mockStateUpdate, mockBearingUpdate, mockCaps);
                     c->connect();
                     ok = c->isConnected();
                 }
@@ -938,6 +1152,38 @@ private:
         }
     }
 
+    // Keep the editable UI inside the range the board advertises. Capabilities
+    // arrive after connect (and can change on reconnect to different hardware),
+    // so selections made against a wider board would otherwise be rejected by
+    // the client as out of range.
+    void syncUiToCaps(ChannelUi& ui, int ci, int inputCount) {
+        if (ui.lastInputCount == inputCount) { return; }
+        ui.lastInputCount = inputCount;
+
+        if (ui.manualSel >= inputCount) { ui.manualSel = inputCount - 1; }
+        if (ui.planInputSel >= inputCount) { ui.planInputSel = inputCount - 1; }
+
+        const std::size_t autoBefore = ui.autoOrder.size();
+        ui.autoOrder.erase(std::remove_if(ui.autoOrder.begin(), ui.autoOrder.end(),
+                                          [&](int in) { return in > inputCount; }),
+                           ui.autoOrder.end());
+        const std::size_t planBefore = ui.planSteps.size();
+        ui.planSteps.erase(
+            std::remove_if(ui.planSteps.begin(), ui.planSteps.end(),
+                           [&](const antenna_switcher::PlanStep& s) {
+                               return s.kind == antenna_switcher::PlanStep::Kind::Input &&
+                                      s.input > inputCount;
+                           }),
+            ui.planSteps.end());
+
+        if (autoBefore != ui.autoOrder.size() || planBefore != ui.planSteps.size()) {
+            flog::warn("[antenna_switcher:{0}] ch{1} board has {2} inputs; dropped {3} auto and "
+                       "{4} plan entries beyond that",
+                       name, ci + 1, inputCount, (int)(autoBefore - ui.autoOrder.size()),
+                       (int)(planBefore - ui.planSteps.size()));
+        }
+    }
+
     // Thread-safe snapshot of a channel's state (empty if not connected).
     antenna_switcher::ChannelState channelStateSnapshot(antenna_switcher::Channel channel) {
         std::lock_guard<std::mutex> lk(mtx);
@@ -993,6 +1239,7 @@ private:
             };
             sectionOpen("compass", ui.compassOpen);
             sectionOpen("status", ui.statusOpen);
+            sectionOpen("board", ui.boardOpen);
             sectionOpen("manual", ui.manualOpen);
             sectionOpen("auto", ui.autoOpen);
             sectionOpen("plan", ui.planOpen);
@@ -1061,9 +1308,14 @@ private:
 
         bool compassFloating = false;  // compass shown in a floating window
 
+        // Last input count the selections above were reconciled against; 0 until
+        // the first frame. See syncUiToCaps().
+        int lastInputCount = 0;
+
         // Collapsible section states (persisted as channels[ci].<section>.enabled).
         bool compassOpen = true;
         bool statusOpen = true;
+        bool boardOpen = false;
         bool manualOpen = true;
         bool autoOpen = true;
         bool planOpen = true;
@@ -1088,6 +1340,13 @@ private:
     bool mockClient = true;  // use the server-less mock connection
     int mockStateUpdate = 1000;   // mock auto/plan step interval, ms (config-only)
     int mockBearingUpdate = 100;  // mock bearing spin interval, ms (config-only)
+    // Shape the mock switcher reports. Defaults to the legacy board plus `off`,
+    // so the mock exercises every feature the UI can render.
+    antenna_switcher::Capabilities mockCaps{
+        antenna_switcher::legacy_input_count, antenna_switcher::legacy_circle_count,
+        antenna_switcher::legacy_features |
+            static_cast<std::uint64_t>(antenna_switcher::Feature::Off),
+        false};
 
     // Client options assembled from the config above.
     antenna_switcher::Options options;
